@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # original — 초기 프로토타입 코드
 
 본 폴더는 3D GAN 실험에 가장 먼저 작성·적용한 **원본(prototype) 코드**입니다.  
@@ -71,3 +72,8 @@ python 앙상블.py --n_epochs 200 --label_type 0
 
 - 개선된 전체 파이프라인 실행: `../Structured/pipeline.py`
 - 기반 논문: [Intrusion Detection Using 3DGAN](https://www.mdpi.com/3793174)
+=======
+## 가장 처음 작성하고 완성하여 실험 적용한 모델
+
+
+>>>>>>> 26cf346ec892a4e6edc676d386d9854eb5febf54
