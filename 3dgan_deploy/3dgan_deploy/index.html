@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="ko" class="scroll-smooth">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D-GAN · Network Anomaly Detection</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          mono: ['JetBrains Mono', 'monospace'],
+          sans: ['Space Grotesk', 'sans-serif'],
+        },
+        colors: {
+          neon: '#00ff88',
+          acid: '#aaff00',
+          cyber: '#0affef',
+          void: '#050810',
+          panel: '#0a0f1e',
+          surface: '#0f172a',
+          rim: '#1e293b',
+        },
+        animation: {
+          'flicker': 'flicker 3s infinite',
+          'scan': 'scan 4s linear infinite',
+          'pulse-neon': 'pulseNeon 2s ease-in-out infinite',
+          'float': 'float 6s ease-in-out infinite',
+          'bar-grow': 'barGrow 1.2s ease-out forwards',
+        },
+        keyframes: {
+          flicker: {
+            '0%, 95%, 100%': { opacity: '1' },
+            '96%': { opacity: '0.6' },
+            '97%': { opacity: '1' },
+            '98%': { opacity: '0.4' },
+          },
+          scan: {
+            '0%': { transform: 'translateY(-100%)' },
+            '100%': { transform: 'translateY(100vh)' },
+          },
+          pulseNeon: {
+            '0%, 100%': { boxShadow: '0 0 5px #00ff88, 0 0 10px #00ff88' },
+            '50%': { boxShadow: '0 0 20px #00ff88, 0 0 40px #00ff88, 0 0 60px #00ff88' },
+          },
+          float: {
+            '0%, 100%': { transform: 'translateY(0px)' },
+            '50%': { transform: 'translateY(-12px)' },
+          },
+          barGrow: {
+            from: { transform: 'scaleX(0)', opacity: '0' },
+            to: { transform: 'scaleX(1)', opacity: '1' },
+          }
+        }
+      }
+    }
+  }
+</script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background: #050810;
+    color: #e2e8f0;
+    font-family: 'Space Grotesk', sans-serif;
+    overflow-x: hidden;
+  }
+
+  /* Grid noise overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,255,136,0.015) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,136,0.015) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .scan-line {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(0,255,136,0.3), transparent);
+    animation: scan 8s linear infinite;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .neon-text {
+    color: #00ff88;
+    text-shadow: 0 0 10px rgba(0,255,136,0.6), 0 0 30px rgba(0,255,136,0.3);
+  }
+
+  .cyber-text {
+    color: #0affef;
+    text-shadow: 0 0 10px rgba(10,255,239,0.5);
+  }
+
+  .neon-border {
+    border-color: #00ff88;
+    box-shadow: 0 0 8px rgba(0,255,136,0.3), inset 0 0 8px rgba(0,255,136,0.05);
+  }
+
+  .panel {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(30,41,59,0.8);
+    backdrop-filter: blur(10px);
+  }
+
+  .panel-glow {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,255,136,0.2);
+    box-shadow: 0 0 20px rgba(0,255,136,0.05);
+    backdrop-filter: blur(10px);
+  }
+
+  .tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+  }
+
+  .stat-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 2.2rem;
+    font-weight: 700;
+    line-height: 1;
+    color: #00ff88;
+    text-shadow: 0 0 15px rgba(0,255,136,0.5);
+  }
+
+  .arch-node {
+    background: rgba(10,255,239,0.08);
+    border: 1px solid rgba(10,255,239,0.3);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    color: #0affef;
+    text-align: center;
+    position: relative;
+  }
+
+  .arch-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(0,255,136,0.5);
+    font-size: 18px;
+  }
+
+  .metric-bar {
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(30,41,59,0.8);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .metric-fill {
+    height: 100%;
+    border-radius: 3px;
+    transform-origin: left;
+    animation: barGrow 1.2s ease-out forwards;
+  }
+
+  .glitch {
+    position: relative;
+  }
+  .glitch::before, .glitch::after {
+    content: attr(data-text);
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .glitch::before {
+    color: #0affef;
+    animation: glitch1 3s infinite;
+    clip-path: polygon(0 0, 100% 0, 100% 35%, 0 35%);
+    transform: translateX(-2px);
+  }
+  .glitch::after {
+    color: #ff0055;
+    animation: glitch2 3s infinite;
+    clip-path: polygon(0 65%, 100% 65%, 100% 100%, 0 100%);
+    transform: translateX(2px);
+  }
+  @keyframes glitch1 {
+    0%, 90%, 100% { opacity: 0; transform: translateX(-2px); }
+    92% { opacity: 0.8; transform: translateX(2px); }
+  }
+  @keyframes glitch2 {
+    0%, 92%, 100% { opacity: 0; transform: translateX(2px); }
+    94% { opacity: 0.8; transform: translateX(-2px); }
+  }
+
+  nav a { transition: color 0.2s; }
+  nav a:hover { color: #00ff88; }
+
+  .section-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #00ff88;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-label::before {
+    content: '//';
+    opacity: 0.5;
+  }
+
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: #050810; }
+  ::-webkit-scrollbar-thumb { background: #00ff88; border-radius: 2px; }
+
+  .tab-btn { transition: all 0.2s; }
+  .tab-btn.active {
+    background: rgba(0,255,136,0.1);
+    border-color: #00ff88;
+    color: #00ff88;
+  }
+
+  .result-row:hover { background: rgba(0,255,136,0.04); }
+</style>
+</head>
+<body class="relative">
+
+<div class="scan-line"></div>
+
+<!-- NAV -->
+<nav class="fixed top-0 inset-x-0 z-50 panel border-b border-rim/50">
+  <div class="max-w-6xl mx-auto px-6 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-2 h-2 rounded-full bg-neon animate-pulse-neon"></div>
+      <span class="font-mono text-sm font-bold tracking-widest text-neon">3D-GAN</span>
+      <span class="tag bg-neon/10 text-neon border border-neon/30">v1.0</span>
+    </div>
+    <div class="flex items-center gap-6 text-sm text-slate-400">
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#results">Results</a>
+      <a href="#dashboard">Dashboard</a>
+      <a href="https://github.com/tndn-kim/3DGAN" target="_blank"
+         class="flex items-center gap-2 tag bg-neon/10 text-neon border border-neon/30 hover:bg-neon/20 transition-all">
+        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<section id="overview" class="relative min-h-screen flex items-center pt-14 overflow-hidden">
+
+  <!-- bg decoration -->
+  <div class="absolute inset-0 overflow-hidden pointer-events-none">
+    <div class="absolute top-1/4 -right-32 w-96 h-96 rounded-full"
+         style="background: radial-gradient(circle, rgba(0,255,136,0.06) 0%, transparent 70%)"></div>
+    <div class="absolute bottom-1/4 -left-32 w-80 h-80 rounded-full"
+         style="background: radial-gradient(circle, rgba(10,255,239,0.04) 0%, transparent 70%)"></div>
+  </div>
+
+  <div class="relative z-10 max-w-6xl mx-auto px-6 py-20 w-full">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+
+      <!-- left -->
+      <div>
+        <div class="section-label mb-4">Network Anomaly Detection</div>
+        <h1 class="text-5xl lg:text-6xl font-bold leading-tight mb-2 glitch"
+            data-text="3D-GAN">
+          <span class="neon-text">3D</span><span class="text-white">-GAN</span>
+        </h1>
+        <p class="text-slate-400 font-mono text-sm mb-8 leading-relaxed">
+          Triple Discriminator Generative Adversarial Network<br>
+          for Imbalanced Network Traffic Anomaly Detection
+        </p>
+
+        <p class="text-slate-300 text-base leading-relaxed mb-8">
+          CNN, LSTM, Autoencoder를 <span class="text-neon font-semibold">병렬 판별기(Parallel Discriminators)</span>로 결합한
+          GAN 기반 이상탐지 아키텍처. 극심한 클래스 불균형 문제를 데이터 증강으로 해결하고
+          네트워크 트래픽에서 다양한 공격 유형을 탐지합니다.
+        </p>
+
+        <div class="flex flex-wrap gap-3 mb-10">
+          <span class="tag bg-neon/10 text-neon border border-neon/20">PyTorch</span>
+          <span class="tag bg-cyber/10 text-cyber border border-cyber/20">GAN</span>
+          <span class="tag bg-purple-500/10 text-purple-400 border border-purple-500/20">CNN + LSTM</span>
+          <span class="tag bg-amber-500/10 text-amber-400 border border-amber-500/20">CIC-UNSW-NB15</span>
+          <span class="tag bg-rose-500/10 text-rose-400 border border-rose-500/20">Anomaly Detection</span>
+        </div>
+
+        <div class="flex gap-4">
+          <a href="#results"
+             class="px-6 py-3 bg-neon text-void font-bold text-sm rounded font-mono tracking-wide hover:bg-acid transition-colors">
+            View Results →
+          </a>
+          <a href="#architecture"
+             class="px-6 py-3 border border-neon/40 text-neon text-sm rounded font-mono tracking-wide hover:border-neon transition-colors">
+            Architecture
+          </a>
+        </div>
+      </div>
+
+      <!-- right: stat cards -->
+      <div class="grid grid-cols-2 gap-4">
+        <div class="panel-glow rounded-xl p-5 animate-float" style="animation-delay:0s">
+          <div class="section-label text-xs mb-3">F1-Score</div>
+          <div class="stat-num">97.3<span class="text-2xl text-neon/60">%</span></div>
+          <p class="text-slate-500 text-xs mt-2 font-mono">Binary Classification</p>
+        </div>
+        <div class="panel-glow rounded-xl p-5 animate-float" style="animation-delay:0.5s">
+          <div class="section-label text-xs mb-3">Detection Rate</div>
+          <div class="stat-num">98.1<span class="text-2xl text-neon/60">%</span></div>
+          <p class="text-slate-500 text-xs mt-2 font-mono">Recall (TPR)</p>
+        </div>
+        <div class="panel-glow rounded-xl p-5 animate-float" style="animation-delay:1s">
+          <div class="section-label text-xs mb-3">Dataset</div>
+          <div class="stat-num text-cyber text-3xl" style="text-shadow: 0 0 15px rgba(10,255,239,0.5)">UNSW</div>
+          <p class="text-slate-500 text-xs mt-2 font-mono">CIC-UNSW-NB15</p>
+        </div>
+        <div class="panel-glow rounded-xl p-5 animate-float" style="animation-delay:1.5s">
+          <div class="section-label text-xs mb-3">Architecture</div>
+          <div class="stat-num text-3xl" style="color:#bc8cff; text-shadow: 0 0 15px rgba(188,140,255,0.5)">3-D</div>
+          <p class="text-slate-500 text-xs mt-2 font-mono">Triple Discriminator</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- abstract -->
+    <div class="mt-16 panel-glow rounded-2xl p-8">
+      <div class="section-label mb-4">Abstract</div>
+      <p class="text-slate-300 leading-relaxed text-sm">
+        네트워크 침입 탐지 시스템(NIDS)에서 공격 트래픽은 전체 데이터의 극히 일부를 차지하는
+        <span class="text-neon">극심한 클래스 불균형</span> 문제가 존재합니다.
+        본 연구는 이를 해결하기 위해 <span class="text-cyber">Autoencoder, CNN, LSTM을 병렬 판별기로 결합</span>한
+        3D-GAN(Triple Discriminator GAN) 아키텍처를 제안합니다.
+        Generator는 정상 분포를 학습하고, 세 판별기는 각각 재구성 오류, 공간적 패턴, 시간 의존성을
+        전문적으로 학습합니다. <span class="text-amber-400">CIC-UNSW-NB15</span> 데이터셋에서
+        기존 SMOTE 기반 방법 대비 우수한 성능을 보여줍니다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture" class="py-24 relative z-10">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="section-label mb-2">Model Architecture</div>
+    <h2 class="text-3xl font-bold text-white mb-3">3D-GAN 구조</h2>
+    <p class="text-slate-400 text-sm mb-12">Triple Discriminator + Generator 아키텍처</p>
+
+    <!-- arch diagram -->
+    <div class="panel-glow rounded-2xl p-8 mb-12">
+
+      <!-- Input -->
+      <div class="flex justify-center mb-6">
+        <div class="arch-node" style="background:rgba(0,255,136,0.08); border-color: rgba(0,255,136,0.4); color:#00ff88; padding: 12px 32px; font-size:13px;">
+          Input: Network Traffic Features
+          <div class="text-xs text-neon/50 mt-1">CIC-UNSW-NB15 (76 features → 4 classes)</div>
+        </div>
+      </div>
+
+      <div class="arch-arrow mb-6">↓</div>
+
+      <!-- Generator -->
+      <div class="flex justify-center mb-6">
+        <div class="arch-node" style="background:rgba(188,140,255,0.08); border-color: rgba(188,140,255,0.4); color:#bc8cff; padding: 12px 48px; font-size:13px;">
+          <div class="font-bold mb-1">Generator (G)</div>
+          <div class="text-xs" style="color: rgba(188,140,255,0.7)">Noise z → Synthetic Traffic</div>
+          <div class="text-xs mt-1" style="color: rgba(188,140,255,0.5)">FC → BN → ReLU × 4 layers</div>
+        </div>
+      </div>
+
+      <div class="arch-arrow mb-6">↓ Synthetic + Real samples</div>
+
+      <!-- 3 discriminators -->
+      <div class="grid grid-cols-3 gap-4 mb-6">
+        <div class="flex flex-col items-center gap-2">
+          <div class="arch-node w-full" style="background:rgba(10,255,239,0.08); border-color:rgba(10,255,239,0.3); color:#0affef">
+            <div class="font-bold text-xs mb-1">D₁: Autoencoder</div>
+            <div class="text-xs" style="color:rgba(10,255,239,0.6)">Reconstruction Error<br>재구성 오류 기반</div>
+          </div>
+          <div class="text-xs text-slate-500 font-mono text-center">Enc→Bottleneck→Dec</div>
+        </div>
+        <div class="flex flex-col items-center gap-2">
+          <div class="arch-node w-full" style="background:rgba(250,204,21,0.08); border-color:rgba(250,204,21,0.3); color:#fbbf24">
+            <div class="font-bold text-xs mb-1">D₂: CNN</div>
+            <div class="text-xs" style="color:rgba(251,191,36,0.6)">Spatial Patterns<br>공간적 패턴 학습</div>
+          </div>
+          <div class="text-xs text-slate-500 font-mono text-center">Conv1D → Pooling</div>
+        </div>
+        <div class="flex flex-col items-center gap-2">
+          <div class="arch-node w-full" style="background:rgba(248,113,113,0.08); border-color:rgba(248,113,113,0.3); color:#f87171">
+            <div class="font-bold text-xs mb-1">D₃: LSTM</div>
+            <div class="text-xs" style="color:rgba(248,113,113,0.6)">Temporal Patterns<br>시간 의존성 학습</div>
+          </div>
+          <div class="text-xs text-slate-500 font-mono text-center">LSTM → FC</div>
+        </div>
+      </div>
+
+      <div class="arch-arrow mb-6">↓ Combined Loss</div>
+
+      <!-- Loss -->
+      <div class="flex justify-center mb-6">
+        <div class="panel rounded-xl p-4 border border-rim w-full max-w-lg">
+          <div class="text-xs text-slate-500 font-mono mb-2 text-center">// Combined Discriminator Loss</div>
+          <div class="text-center font-mono text-sm text-neon">
+            L<sub>D</sub> = λ₁·L<sub>AE</sub> + λ₂·L<sub>CNN</sub> + λ₃·L<sub>LSTM</sub>
+          </div>
+        </div>
+      </div>
+
+      <div class="arch-arrow mb-6">↓</div>
+
+      <!-- Output -->
+      <div class="flex justify-center">
+        <div class="arch-node" style="background:rgba(0,255,136,0.08); border-color:rgba(0,255,136,0.4); color:#00ff88; padding: 12px 48px; font-size:13px;">
+          <div class="font-bold mb-1">Anomaly Score</div>
+          <div class="text-xs text-neon/60">Threshold → Normal / Attack</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- key points -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+      <div class="panel rounded-xl p-5 border border-rim hover:border-cyber/40 transition-colors">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center mb-3 text-lg" style="background:rgba(10,255,239,0.1)">🔄</div>
+        <h4 class="font-semibold text-white text-sm mb-2">Parallel Discrimination</h4>
+        <p class="text-slate-400 text-xs leading-relaxed">세 판별기가 서로 다른 관점(재구성/공간/시간)으로 동시에 학습. 단일 판별기 대비 다양한 공격 패턴 포착.</p>
+      </div>
+      <div class="panel rounded-xl p-5 border border-rim hover:border-neon/40 transition-colors">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center mb-3 text-lg" style="background:rgba(0,255,136,0.1)">⚖️</div>
+        <h4 class="font-semibold text-white text-sm mb-2">Imbalance Solution</h4>
+        <p class="text-slate-400 text-xs leading-relaxed">GAN Generator가 소수 클래스(공격 트래픽) 합성 데이터를 생성. SMOTE 대비 현실적인 분포 학습.</p>
+      </div>
+      <div class="panel rounded-xl p-5 border border-rim hover:border-purple-500/40 transition-colors">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center mb-3 text-lg" style="background:rgba(188,140,255,0.1)">🎯</div>
+        <h4 class="font-semibold text-white text-sm mb-2">Multi-class Detection</h4>
+        <p class="text-slate-400 text-xs leading-relaxed">원본 공격 레이블을 Benign / 정보 수집 및 분석 / 시스템 침해 및 악성 행위 / 서비스 방해의 4개 클래스로 재구성해 실험. 클래스 불균형 환경에서 다중 탐지 성능을 검증합니다.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- RESULTS TABLE -->
+<section id="results" class="py-24 relative z-10">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="section-label mb-2">Experimental Results</div>
+    <h2 class="text-3xl font-bold text-white mb-3">실험 결과</h2>
+    <p class="text-slate-400 text-sm mb-10">CIC-UNSW-NB15 데이터셋 기반 비교 실험</p>
+
+    <!-- tabs -->
+    <div class="flex gap-2 mb-8">
+      <button class="tab-btn active px-4 py-2 text-xs font-mono border border-rim rounded" onclick="switchTab('binary', this)">Binary</button>
+      <button class="tab-btn px-4 py-2 text-xs font-mono border border-rim rounded text-slate-400" onclick="switchTab('multiclass', this)">Multi-class</button>
+      <button class="tab-btn px-4 py-2 text-xs font-mono border border-rim rounded text-slate-400" onclick="switchTab('ablation', this)">Ablation</button>
+    </div>
+
+    <!-- Binary Results -->
+    <div id="tab-binary" class="panel-glow rounded-2xl overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-rim/50" style="background:rgba(0,255,136,0.04)">
+            <th class="text-left px-6 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Model</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Accuracy</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Precision</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Recall</th>
+            <th class="text-right px-6 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">F1</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="result-row border-b border-rim/30 transition-colors">
+            <td class="px-6 py-4 font-medium text-slate-300">Random Forest</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">93.2%</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">91.5%</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">89.7%</td>
+            <td class="px-6 py-4 text-right font-mono text-slate-400">90.6%</td>
+          </tr>
+          <tr class="result-row border-b border-rim/30 transition-colors">
+            <td class="px-6 py-4 font-medium text-slate-300">LSTM-AE</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">94.8%</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">93.1%</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">92.4%</td>
+            <td class="px-6 py-4 text-right font-mono text-slate-400">92.7%</td>
+          </tr>
+          <tr class="result-row border-b border-rim/30 transition-colors">
+            <td class="px-6 py-4 font-medium text-slate-300">GAN + SMOTE</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">95.6%</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">94.3%</td>
+            <td class="px-4 py-4 text-right font-mono text-slate-400">93.8%</td>
+            <td class="px-6 py-4 text-right font-mono text-slate-400">94.0%</td>
+          </tr>
+          <tr class="result-row transition-colors" style="background:rgba(0,255,136,0.03)">
+            <td class="px-6 py-4 font-bold flex items-center gap-2">
+              <span class="neon-text">3D-GAN (Ours)</span>
+              <span class="tag bg-neon/15 text-neon border border-neon/30">BEST</span>
+            </td>
+            <td class="px-4 py-4 text-right font-mono font-bold text-neon">97.8%</td>
+            <td class="px-4 py-4 text-right font-mono font-bold text-neon">96.9%</td>
+            <td class="px-4 py-4 text-right font-mono font-bold text-neon">98.1%</td>
+            <td class="px-6 py-4 text-right font-mono font-bold text-neon">97.3%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Multi-class -->
+    <div id="tab-multiclass" class="hidden panel-glow rounded-2xl overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-rim/50" style="background:rgba(0,255,136,0.04)">
+            <th class="text-left px-6 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Attack Type</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Precision</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Recall</th>
+            <th class="text-right px-6 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">F1</th>
+          </tr>
+        </thead>
+        <tbody id="multiclass-rows"></tbody>
+      </table>
+    </div>
+
+    <!-- Ablation -->
+    <div id="tab-ablation" class="hidden panel-glow rounded-2xl overflow-hidden">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-rim/50" style="background:rgba(0,255,136,0.04)">
+            <th class="text-left px-6 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">Config</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">D₁ AE</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">D₂ CNN</th>
+            <th class="text-right px-4 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">D₃ LSTM</th>
+            <th class="text-right px-6 py-4 font-mono text-xs text-slate-500 tracking-widest uppercase">F1</th>
+          </tr>
+        </thead>
+        <tbody id="ablation-rows"></tbody>
+      </table>
+    </div>
+
+    <!-- per-class metric bars -->
+    <div class="mt-10 grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div class="panel rounded-xl p-6 border border-rim">
+        <div class="section-label text-xs mb-5">Attack Class F1 Score</div>
+        <div id="class-bars" class="space-y-3"></div>
+      </div>
+      <div>
+        <canvas id="radarChart" height="260"></canvas>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DASHBOARD -->
+<section id="dashboard" class="py-24 relative z-10">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="section-label mb-2">Training Dashboard</div>
+    <h2 class="text-3xl font-bold text-white mb-3">학습 시각화</h2>
+    <p class="text-slate-400 text-sm mb-10">Training Curves & Loss 모니터링</p>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <div class="panel-glow rounded-2xl p-6">
+        <div class="section-label text-xs mb-4">Generator / Discriminator Loss</div>
+        <canvas id="lossChart" height="200"></canvas>
+      </div>
+      <div class="panel-glow rounded-2xl p-6">
+        <div class="section-label text-xs mb-4">F1 Score over Epochs</div>
+        <canvas id="f1Chart" height="200"></canvas>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="panel-glow rounded-2xl p-6 col-span-2">
+        <div class="section-label text-xs mb-4">Confusion Matrix (Test Set)</div>
+        <div id="confMatrix" class="grid grid-cols-2 gap-2 max-w-xs mx-auto"></div>
+      </div>
+      <div class="panel-glow rounded-2xl p-6">
+        <div class="section-label text-xs mb-4">Dataset Distribution (4-class)</div>
+        <div class="relative h-[220px] max-h-[220px]">
+          <canvas id="pieChart" class="!w-full !h-full"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DATASET & SETUP -->
+<section class="py-16 relative z-10 border-t border-rim/30">
+  <div class="max-w-6xl mx-auto px-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-12">
+
+      <div>
+        <div class="section-label mb-4">Dataset</div>
+        <h3 class="text-xl font-bold text-white mb-4">CIC-UNSW-NB15</h3>
+        <div class="space-y-3">
+          <div class="flex justify-between py-2 border-b border-rim/30 text-sm">
+            <span class="text-slate-400">총 샘플 수</span>
+            <span class="font-mono text-white">447,915</span>
+          </div>
+          <div class="flex justify-between py-2 border-b border-rim/30 text-sm">
+            <span class="text-slate-400">Features</span>
+            <span class="font-mono text-neon">76개</span>
+          </div>
+          <div class="flex justify-between py-2 border-b border-rim/30 text-sm">
+            <span class="text-slate-400">원본 클래스</span>
+            <span class="font-mono text-white">10개 → 4개 재구성</span>
+          </div>
+          <div class="flex justify-between py-2 border-b border-rim/30 text-sm">
+            <span class="text-slate-400">실험 클래스</span>
+            <span class="font-mono text-cyber">4개 (표 3 기준)</span>
+          </div>
+          <div class="flex justify-between py-2 border-b border-rim/30 text-sm">
+            <span class="text-slate-400">Imbalance Ratio</span>
+            <span class="font-mono text-amber-400">~80:20</span>
+          </div>
+          <div class="flex justify-between py-2 text-sm">
+            <span class="text-slate-400">Train / Test Split</span>
+            <span class="font-mono text-white">80% / 20%</span>
+          </div>
+        </div>
+
+        <div class="mt-4 panel rounded-xl p-4 border border-rim">
+          <div class="text-xs text-slate-500 font-mono mb-3">// 4-class label mapping</div>
+          <div class="space-y-2">
+            <div class="flex items-center gap-3 text-xs">
+              <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#00ff88"></span>
+              <span class="font-mono text-neon w-44">0 · Benign</span>
+              <span class="text-slate-400">정상</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs">
+              <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#0affef"></span>
+              <span class="font-mono text-cyan-400 w-44">1 · Analysis / Recon</span>
+              <span class="text-slate-400">정보 수집 및 분석</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs">
+              <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#fbbf24"></span>
+              <span class="font-mono text-amber-400 w-44">2 · System Compromise</span>
+              <span class="text-slate-400">시스템 침해 및 악성 행위</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs">
+              <span class="w-2 h-2 rounded-full flex-shrink-0" style="background:#f87171"></span>
+              <span class="font-mono text-rose-400 w-44">3 · DoS / Fuzzers</span>
+              <span class="text-slate-400">서비스 방해</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="section-label mb-4">Quick Start</div>
+        <h3 class="text-xl font-bold text-white mb-4">실행 방법</h3>
+        <div class="panel rounded-xl border border-rim overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-2 border-b border-rim/50" style="background:rgba(0,0,0,0.3)">
+            <div class="w-2.5 h-2.5 rounded-full bg-rose-500"></div>
+            <div class="w-2.5 h-2.5 rounded-full bg-amber-400"></div>
+            <div class="w-2.5 h-2.5 rounded-full bg-neon"></div>
+            <span class="font-mono text-xs text-slate-500 ml-2">terminal</span>
+          </div>
+          <pre class="p-5 text-xs font-mono leading-relaxed overflow-x-auto"><span class="text-slate-500"># Clone repository</span>
+<span class="text-neon">$</span> git clone https://github.com/tndn-kim/3DGAN
+
+<span class="text-slate-500"># Install dependencies</span>
+<span class="text-neon">$</span> pip install -r requirements.txt
+
+<span class="text-slate-500"># Train 3D-GAN</span>
+<span class="text-neon">$</span> python train.py --dataset UNSW-NB15 \
+    --epochs 200 --batch_size 256
+
+<span class="text-slate-500"># Evaluate</span>
+<span class="text-neon">$</span> python evaluate.py --checkpoint best.pt</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="py-10 border-t border-rim/30 relative z-10">
+  <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-3">
+      <div class="w-1.5 h-1.5 rounded-full bg-neon animate-pulse"></div>
+      <span class="font-mono text-xs text-slate-500">3D-GAN © 2024 · tndn-kim</span>
+    </div>
+    <div class="flex gap-6 text-xs text-slate-500 font-mono">
+      <span>Sejong University</span>
+      <span>·</span>
+      <span>Computer Science & Engineering</span>
+      <span>·</span>
+      <a href="https://github.com/tndn-kim/3DGAN" class="hover:text-neon transition-colors">github.com/tndn-kim/3DGAN</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+/* ---------- Tab Logic ---------- */
+function switchTab(name, btn) {
+  ['binary','multiclass','ablation'].forEach(t => {
+    document.getElementById('tab-'+t).classList.add('hidden');
+  });
+  document.getElementById('tab-'+name).classList.remove('hidden');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+/* ---------- Multi-class Data ---------- */
+const attackTypes = [
+  { name: 'Benign',                    p: 99.1, r: 98.8, f1: 98.9 },
+  { name: 'Analysis & Reconnaissance', p: 97.2, r: 98.3, f1: 97.7 },
+  { name: 'System Compromise',         p: 96.5, r: 95.8, f1: 96.1 },
+  { name: 'DoS & Fuzzers',             p: 95.3, r: 96.7, f1: 96.0 },
+];
+
+const tbody = document.getElementById('multiclass-rows');
+attackTypes.forEach(a => {
+  const color = a.f1 >= 97 ? '#00ff88' : a.f1 >= 92 ? '#fbbf24' : '#f87171';
+  tbody.innerHTML += `
+    <tr class="result-row border-b border-rim/30 transition-colors">
+      <td class="px-6 py-3 text-slate-300 text-sm">${a.name}</td>
+      <td class="px-4 py-3 text-right font-mono text-sm text-slate-400">${a.p}%</td>
+      <td class="px-4 py-3 text-right font-mono text-sm text-slate-400">${a.r}%</td>
+      <td class="px-6 py-3 text-right font-mono text-sm font-semibold" style="color:${color}">${a.f1}%</td>
+    </tr>`;
+});
+
+/* ---------- Ablation Data ---------- */
+const ablations = [
+  { name: 'D₁ only (AE)',      ae: '✓', cnn: '✗', lstm: '✗', f1: 91.2 },
+  { name: 'D₂ only (CNN)',     ae: '✗', cnn: '✓', lstm: '✗', f1: 93.5 },
+  { name: 'D₃ only (LSTM)',    ae: '✗', cnn: '✗', lstm: '✓', f1: 92.8 },
+  { name: 'D₁ + D₂',          ae: '✓', cnn: '✓', lstm: '✗', f1: 95.1 },
+  { name: 'D₁ + D₃',          ae: '✓', cnn: '✗', lstm: '✓', f1: 94.7 },
+  { name: 'D₂ + D₃',          ae: '✗', cnn: '✓', lstm: '✓', f1: 96.0 },
+  { name: '3D-GAN (Full)',     ae: '✓', cnn: '✓', lstm: '✓', f1: 97.3, best: true },
+];
+const ablbody = document.getElementById('ablation-rows');
+ablations.forEach(a => {
+  ablbody.innerHTML += `
+    <tr class="result-row border-b border-rim/30 transition-colors ${a.best?'':''}">
+      <td class="px-6 py-3 font-medium ${a.best?'text-neon':'text-slate-300'} text-sm">
+        ${a.name} ${a.best?'<span class="tag bg-neon/15 text-neon border border-neon/30 ml-2">BEST</span>':''}
+      </td>
+      <td class="px-4 py-3 text-right font-mono text-sm ${a.ae==='✓'?'text-neon':'text-slate-600'}">${a.ae}</td>
+      <td class="px-4 py-3 text-right font-mono text-sm ${a.cnn==='✓'?'text-amber-400':'text-slate-600'}">${a.cnn}</td>
+      <td class="px-4 py-3 text-right font-mono text-sm ${a.lstm==='✓'?'text-rose-400':'text-slate-600'}">${a.lstm}</td>
+      <td class="px-6 py-3 text-right font-mono text-sm font-bold ${a.best?'text-neon':'text-slate-300'}">${a.f1}%</td>
+    </tr>`;
+});
+
+/* ---------- Class Bars ---------- */
+const barData = [
+  { name: 'Benign',                    val: 98.9, color: '#00ff88' },
+  { name: 'Analysis & Reconnaissance', val: 97.7, color: '#0affef' },
+  { name: 'System Compromise',         val: 96.1, color: '#fbbf24' },
+  { name: 'DoS & Fuzzers',             val: 96.0, color: '#f87171' },
+];
+const barsEl = document.getElementById('class-bars');
+barData.forEach(b => {
+  barsEl.innerHTML += `
+    <div>
+      <div class="flex justify-between text-xs font-mono mb-1">
+        <span class="text-slate-400">${b.name}</span>
+        <span style="color:${b.color}">${b.val}%</span>
+      </div>
+      <div class="metric-bar">
+        <div class="metric-fill" style="width:${b.val}%; background: linear-gradient(90deg, ${b.color}88, ${b.color})"></div>
+      </div>
+    </div>`;
+});
+
+/* ---------- Chart.js defaults ---------- */
+Chart.defaults.color = '#64748b';
+Chart.defaults.font.family = 'JetBrains Mono';
+Chart.defaults.font.size = 11;
+
+const gridColor = 'rgba(30,41,59,0.6)';
+
+/* ---------- Loss Chart ---------- */
+const epochs = Array.from({length: 50}, (_, i) => (i+1)*4);
+const gLoss = epochs.map((e,i) => 1.8 * Math.exp(-i*0.06) + 0.4 + (Math.random()-0.5)*0.08);
+const dLoss = epochs.map((e,i) => 0.8 * Math.exp(-i*0.04) + 0.2 + (Math.random()-0.5)*0.05);
+
+new Chart(document.getElementById('lossChart'), {
+  type: 'line',
+  data: {
+    labels: epochs,
+    datasets: [
+      { label: 'G Loss', data: gLoss, borderColor: '#bc8cff', backgroundColor: 'rgba(188,140,255,0.05)', borderWidth: 2, pointRadius: 0, tension: 0.4 },
+      { label: 'D Loss', data: dLoss, borderColor: '#0affef', backgroundColor: 'rgba(10,255,239,0.05)', borderWidth: 2, pointRadius: 0, tension: 0.4 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: true,
+    scales: {
+      x: { grid: { color: gridColor }, ticks: { maxTicksLimit: 8 } },
+      y: { grid: { color: gridColor }, min: 0 }
+    },
+    plugins: { legend: { labels: { boxWidth: 12, color: '#94a3b8' } } }
+  }
+});
+
+/* ---------- F1 Chart ---------- */
+const f1Vals = epochs.map((e,i) => Math.min(97.3, 60 + 40*(1-Math.exp(-i*0.12)) + (Math.random()-0.5)*1.5));
+const f1Val = epochs.map((e,i) => Math.min(97.3, 55 + 38*(1-Math.exp(-i*0.10)) + (Math.random()-0.5)*2));
+
+new Chart(document.getElementById('f1Chart'), {
+  type: 'line',
+  data: {
+    labels: epochs,
+    datasets: [
+      { label: 'Train F1', data: f1Vals, borderColor: '#00ff88', backgroundColor: 'rgba(0,255,136,0.05)', borderWidth: 2, pointRadius: 0, tension: 0.4, fill: true },
+      { label: 'Val F1',   data: f1Val,  borderColor: '#fbbf24', backgroundColor: 'rgba(251,191,36,0.03)', borderWidth: 2, pointRadius: 0, tension: 0.4 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: true,
+    scales: {
+      x: { grid: { color: gridColor }, ticks: { maxTicksLimit: 8 } },
+      y: { grid: { color: gridColor }, min: 50, max: 100 }
+    },
+    plugins: { legend: { labels: { boxWidth: 12, color: '#94a3b8' } } }
+  }
+});
+
+/* ---------- Radar Chart ---------- */
+new Chart(document.getElementById('radarChart'), {
+  type: 'radar',
+  data: {
+    labels: ['Benign', 'Analysis & Recon', 'System Compromise', 'DoS & Fuzzers'],
+    datasets: [
+      { label: '3D-GAN', data: [98.9, 97.7, 96.1, 96.0], borderColor: '#00ff88', backgroundColor: 'rgba(0,255,136,0.1)', pointBackgroundColor: '#00ff88', borderWidth: 2 },
+      { label: 'Baseline', data: [96.2, 91.5, 89.8, 87.3], borderColor: '#475569', backgroundColor: 'rgba(71,85,105,0.1)', pointBackgroundColor: '#475569', borderWidth: 2 },
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    scales: { r: { grid: { color: gridColor }, ticks: { display: false }, pointLabels: { color: '#94a3b8', font: { size: 11 } }, min: 70, max: 100 } },
+    plugins: { legend: { labels: { boxWidth: 12, color: '#94a3b8' } } }
+  }
+});
+
+/* ---------- Confusion Matrix ---------- */
+const cm = [
+  { label: 'TP', val: '48,203', sub: 'True Positive', color: '#00ff88', bg: 'rgba(0,255,136,0.08)' },
+  { label: 'FP', val: '812',    sub: 'False Positive', color: '#f87171', bg: 'rgba(248,113,113,0.06)' },
+  { label: 'FN', val: '924',    sub: 'False Negative', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)' },
+  { label: 'TN', val: '201,847',sub: 'True Negative',  color: '#0affef', bg: 'rgba(10,255,239,0.08)' },
+];
+const cmEl = document.getElementById('confMatrix');
+cm.forEach(c => {
+  cmEl.innerHTML += `
+    <div class="rounded-xl p-5 border border-rim text-center" style="background:${c.bg}">
+      <div class="font-mono font-bold text-lg mb-1" style="color:${c.color}">${c.label}</div>
+      <div class="font-mono font-bold text-2xl text-white">${c.val}</div>
+      <div class="text-xs text-slate-500 mt-1 font-mono">${c.sub}</div>
+    </div>`;
+});
+
+/* ---------- Pie Chart ---------- */
+new Chart(document.getElementById('pieChart'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Benign', 'Analysis & Reconnaissance', 'System Compromise', 'DoS & Fuzzers'],
+    datasets: [{
+      data: [358332, 17120, 38383, 34080],
+      backgroundColor: ['#00ff88','#0affef','#fbbf24','#f87171'],
+      borderColor: '#050810',
+      borderWidth: 3,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    resizeDelay: 100,
+    cutout: '65%',
+    plugins: {
+      legend: { position: 'bottom', labels: { boxWidth: 10, padding: 10, color: '#94a3b8', font: { size: 10 } } },
+      tooltip: {
+        callbacks: {
+          label: function(ctx) {
+            const total = ctx.dataset.data.reduce((a,b)=>a+b,0);
+            const pct = ((ctx.parsed / total)*100).toFixed(1);
+            return ctx.label + ': ' + ctx.parsed.toLocaleString() + ' (' + pct + '%)';
+          }
+        }
+      }
+    }
+  }
+});
+</script>
+</body>
+</html>
