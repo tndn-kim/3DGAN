@@ -73,6 +73,9 @@ python 앙상블.py --n_epochs 200 --label_type 0
 - 개선된 전체 파이프라인 실행: `../Structured/pipeline.py`
 - 기반 논문: [Intrusion Detection Using 3DGAN](https://www.mdpi.com/3793174)
 =======
+
+
 ## 가장 처음 작성하고 완성하여 실험 적용한 모델
 
+## CIC UNSW NB15를 사용한 결과 대시보드 시각화
 
