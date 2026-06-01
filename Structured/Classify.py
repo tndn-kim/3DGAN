@@ -122,7 +122,7 @@ class BiGRUClassifier(nn.Module):
         dropout     : Dropout 비율 (default 0.2)
     """
     def __init__(self, input_size: int, hidden_size: int = 64,
-                 num_layers: int = 2, num_classes: int = 3,
+                 num_layers: int = 2, num_classes: int = 4,
                  dropout: float = 0.2):
         super().__init__()
         self.gru = nn.GRU(
