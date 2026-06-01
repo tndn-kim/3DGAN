@@ -1,5 +1,6 @@
 ### CIC UNSW NB15 데이터 셋 실험 결과
-<img width="1191" height="1001" alt="image" src="https://github.com/user-attachments/assets/f4abdc99-7e2f-4125-99cf-73742884d2ed" />
+<img width="1552" height="632" alt="image" src="https://github.com/user-attachments/assets/48f9ac7f-c020-42c5-a411-5e912e48927a" />
+
 
  
 --------------------------
