@@ -1,52 +1,30 @@
 """
 pipeline.py
 -----------
-전체 파이프라인 진입점.
+전체 파이프라인 진입점 (학습 + 증강을 한 번에 실행하고 싶을 때 사용).
 
-실행 순서:
-  Step 1 : 전처리          (Preprocess.py)
-  Step 2 : 분류 - 증강 전  (Classify.py)
-  Step 3 : GAN 학습        (Train.py)
-  Step 4 : 데이터 증강     (Augmentation.py)
-  Step 5 : 분류 - 증강 후  (Classify.py)
-  Step 6 : 시각화          (Visualization.py)
+내부적으로 train_pipeline.run_train_pipeline() → augment_pipeline.run_augment_pipeline()
+을 순서대로 호출한다. GAN 학습은 시간이 오래 걸리고, 증강 파라미터
+(ae_threshold, target_counts 등)는 재학습 없이 여러 번 바꿔보는 경우가 많으므로,
+실제 실험에서는 두 파이프라인을 따로 실행하는 것을 권장한다.
+
+  - 학습만:  python train_pipeline.py     → output/models/gan_final.pth 저장
+  - 증강만:  python augment_pipeline.py   → 저장된 gan_final.pth 를 읽어 증강 진행
 
 데이터 스케일 흐름:
   preprocess()  → 정규화 [-1, 1]    (DataLoader 학습용)
   augment()     → 역정규화 후 저장  (원본 스케일)
   classify()    → 내부에서 재정규화 → 원본 스케일 데이터를 받아야 함
-  따라서 pipeline 내에서 dataset 데이터를 역정규화 후 classify()에 전달.
 """
 
 import sys
 import os
 import copy
-import numpy as np
-from collections import Counter
 
-# Structured 폴더 내 모듈 간 임포트 (Train.py → GAN.py, utils.py) 동작을 위해 경로 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from Preprocess import preprocess
-from Train import train
-from Augmentation import augment
-from Classify import classify
-from Visualization import visualize
-
-
-# ────────────────────────────────────────────────
-# 내부 유틸
-# ────────────────────────────────────────────────
-
-def _inverse_normalize(X_norm: np.ndarray, x_min, x_max) -> np.ndarray:
-    """
-    Preprocess.py 의 Min-Max 정규화 역변환.
-    [-1, 1] → 원본 스케일.
-    augment() 가 원본 스케일을 반환하므로 dataset 데이터를 동일 스케일로 맞출 때 사용.
-    """
-    x_min_arr = x_min.values.reshape(1, -1)
-    x_max_arr = x_max.values.reshape(1, -1)
-    return ((X_norm + 1) / 2) * (x_max_arr - x_min_arr + 1e-8) + x_min_arr
+from train_pipeline import run_train_pipeline
+from augment_pipeline import run_augment_pipeline
 
 
 # ────────────────────────────────────────────────
@@ -55,7 +33,7 @@ def _inverse_normalize(X_norm: np.ndarray, x_min, x_max) -> np.ndarray:
 
 def run_pipeline(config: dict) -> dict:
     """
-    전체 파이프라인 실행.
+    학습 + 증강 파이프라인을 순서대로 실행.
 
     Args:
         config : 파이프라인 설정 딕셔너리. DEFAULT_CONFIG 참고.
@@ -66,116 +44,25 @@ def run_pipeline(config: dict) -> dict:
             'results_before': 증강 전 classify() 반환값
             'results_after' : 증강 후 classify() 반환값
             'augmented'     : augment() 반환값 {label: np.ndarray}
+            'model_path'    : 저장된 모델 번들 경로
             'models'        : {'generator', 'disc_ae', 'disc_cnn', 'disc_lstm'}
         }
     """
+    train_result = run_train_pipeline(config)
 
-    base_dir = config.get("base_dir", "./output")
-    ckpt_dir = os.path.join(base_dir, "checkpoints")
-    aug_dir  = os.path.join(base_dir, "augmented")
-    viz_dir  = os.path.join(base_dir, "visualization")
-
-    for d in [ckpt_dir, aug_dir, viz_dir]:
-        os.makedirs(d, exist_ok=True)
-
-    print("=" * 60)
-    print("파이프라인 시작")
-    print("=" * 60)
-
-    # ── Step 1: 전처리 ─────────────────────────────────────────
-    print("\n[Step 1/6] 데이터 전처리")
-    prep = preprocess(config)
-
-    dataloader  = prep["dataloader"]
-    dataset     = prep["dataset"]
-    x_min       = prep["x_min"]
-    x_max       = prep["x_max"]
-    num_classes = prep["num_classes"]
-    feature_dim = prep["feature_dim"]
-
-    # 후속 단계에 필요한 값을 config에 주입
-    config["num_classes"] = num_classes
-    config["feature_dim"] = feature_dim
-
-    # dataset 은 [-1, 1] 정규화 상태 → classify() 는 원본 스케일을 기대하므로 역변환
-    X_orig = _inverse_normalize(dataset.data.numpy(), x_min, x_max)
-    y_orig = dataset.labels.numpy()
-
-    # ── Step 2: 분류 (증강 전) ─────────────────────────────────
-    print("\n[Step 2/6] 분류 모델 학습 - 증강 전")
-    results_before = classify(copy.copy(config), X_orig, y_orig)
-
-    # ── Step 3: GAN 학습 ───────────────────────────────────────
-    print("\n[Step 3/6] GAN 학습")
-    train_config             = copy.copy(config)
-    train_config["save_dir"] = ckpt_dir
-    generator, disc_ae, disc_cnn, disc_lstm = train(train_config, dataloader)
-
-    # ── Step 4: 데이터 증강 ────────────────────────────────────
-    print("\n[Step 4/6] 데이터 증강")
-    label_counter = Counter(y_orig.tolist())
-
-    aug_config                   = copy.copy(config)
-    aug_config["save_dir"]       = aug_dir
-    aug_config["current_counts"] = {int(k): v for k, v in label_counter.items()}
-
-    # target_counts 미설정 시 가장 많은 클래스 수에 맞춰 균등화
-    if not aug_config.get("target_counts"):
-        max_count = max(label_counter.values())
-        aug_config["target_counts"] = {
-            int(lbl): max_count for lbl in label_counter
-        }
-
-    augmented = augment(
-        aug_config,
-        generator, disc_ae, disc_cnn, disc_lstm,
-        x_min, x_max,
+    augment_result = run_augment_pipeline(
+        config,
+        model_path           = train_result["model_path"],
+        results_before_path  = train_result["results_before_path"],
     )
 
-    # ── Step 5: 원본 + 증강 데이터 병합 후 분류 ───────────────
-    print("\n[Step 5/6] 분류 모델 학습 - 증강 후")
-    X_list = [X_orig]
-    y_list = [y_orig]
-
-    for label, arr in augmented.items():
-        # augment() 는 목표 달성 시 np.empty((0,)) 를 반환 → ndim/size 체크
-        if arr is not None and arr.ndim == 2 and arr.size > 0:
-            X_list.append(arr)
-            y_list.append(np.full(len(arr), int(label), dtype=np.int64))
-
-    X_aug = np.concatenate(X_list, axis=0)
-    y_aug = np.concatenate(y_list, axis=0)
-
-    print(f"  병합 완료: {len(X_orig):,}개 → {len(X_aug):,}개")
-    for cls in np.unique(y_aug):
-        print(f"  Label {int(cls)}: {(y_aug == cls).sum():,}개")
-
-    results_after = classify(copy.copy(config), X_aug, y_aug)
-
-    # ── Step 6: 시각화 ────────────────────────────────────────
-    print("\n[Step 6/6] 결과 시각화")
-    viz_config             = copy.copy(config)
-    viz_config["save_dir"] = viz_dir
-    visualize(viz_config, results_before, results_after)
-
-    print("\n" + "=" * 60)
-    print("파이프라인 완료")
-    print(f"  체크포인트  : {ckpt_dir}")
-    print(f"  증강 데이터 : {aug_dir}")
-    print(f"  시각화 결과 : {viz_dir}")
-    print("=" * 60)
-
     return {
-        "preprocess"    : prep,
-        "results_before": results_before,
-        "results_after" : results_after,
-        "augmented"     : augmented,
-        "models": {
-            "generator" : generator,
-            "disc_ae"   : disc_ae,
-            "disc_cnn"  : disc_cnn,
-            "disc_lstm" : disc_lstm,
-        },
+        "preprocess"    : train_result["preprocess"],
+        "results_before": train_result["results_before"],
+        "results_after" : augment_result["results_after"],
+        "augmented"     : augment_result["augmented"],
+        "model_path"    : train_result["model_path"],
+        "models"        : train_result["models"],
     }
 
 
@@ -185,7 +72,7 @@ def run_pipeline(config: dict) -> dict:
 
 DEFAULT_CONFIG = {
     # ── 경로 ──────────────────────────────────────────────────
-    "base_dir"        : "./output",          # 체크포인트 / 증강 / 시각화 루트
+    "base_dir"        : "./output",          # 체크포인트 / 모델 / 증강 / 시각화 루트
     "data_path"       : "./data/features.csv",
     "label_path"      : "./data/labels.csv",
     "label_col"       : "label",

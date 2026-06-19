@@ -1,7 +1,12 @@
 # Structured — GAN 기반 데이터 증강 파이프라인
 
 본 모듈은 3D GAN을 활용한 네트워크 트래픽 데이터 증강 파이프라인입니다.  
-전처리 → GAN 학습 → 데이터 증강 → 분류 성능 비교 → 시각화까지 단일 진입점(`pipeline.py`)으로 실행할 수 있습니다.
+전처리 → GAN 학습 → 데이터 증강 → 분류 성능 비교 → 시각화 단계로 구성되며,
+**학습(train_pipeline.py)과 증강(augment_pipeline.py)이 분리**되어 있습니다.
+GAN 학습은 시간이 오래 걸리지만 증강 파라미터(`ae_threshold`, `target_counts` 등)는
+재학습 없이 여러 번 바꿔보는 경우가 많기 때문입니다. 학습이 끝나면 모델을
+`output/models/gan_final.pth` 한 파일로 저장해두고, 증강 단계는 이 파일만 읽어서
+바로 시작합니다.
 
 > 기반 논문: [Intrusion Detection Using 3DGAN](https://www.mdpi.com/3793174)
 
@@ -11,14 +16,16 @@
 
 ```
 Structured/
-├── pipeline.py        # 전체 파이프라인 진입점 (여기서 실행)
-├── Preprocess.py      # 데이터 전처리 (NaN / 이상치 / 정규화 / DataLoader)
-├── GAN.py             # 모델 아키텍처 (Generator + Discriminator x3)
-├── Train.py           # GAN 학습 루프
-├── Augmentation.py    # 학습된 Generator로 클래스별 데이터 생성
-├── Classify.py        # 분류 모델 학습·평가 (RF / XGBoost / BiGRU)
-├── Visualization.py   # 증강 전/후 성능 비교 그래프 생성
-└── utils.py           # 체크포인트 저장/복원, 스케줄러, LR 조회
+├── train_pipeline.py    # 학습 진입점: 전처리 → 분류(증강 전) → GAN 학습 → 모델 저장
+├── augment_pipeline.py  # 증강 진입점: 모델 로드 → 증강 → 분류(증강 후) → 시각화
+├── Pipeline.py          # 위 둘을 순서대로 한 번에 실행하는 편의 진입점
+├── Preprocess.py       # 데이터 전처리 (NaN / 이상치 / 정규화 / DataLoader)
+├── GAN.py              # 모델 아키텍처 (Generator + Discriminator x3)
+├── Train.py            # GAN 학습 루프
+├── Augmentation.py     # 학습된 Generator로 클래스별 데이터 생성
+├── Classify.py         # 분류 모델 학습·평가 (RF / XGBoost / BiGRU)
+├── Visualization.py    # 증강 전/후 성능 비교 그래프 생성
+└── Utils.py            # 체크포인트/모델 번들 저장·복원, 스케줄러, LR 조회
 ```
 
 ---
@@ -57,7 +64,8 @@ CSV 파일 2개가 필요합니다.
 
 ### 2. 경로 및 설정 수정
 
-`pipeline.py` 하단의 `DEFAULT_CONFIG`에서 경로를 수정합니다.
+`Pipeline.py` 하단의 `DEFAULT_CONFIG`에서 경로를 수정합니다.
+(`train_pipeline.py` / `augment_pipeline.py` 모두 이 설정을 그대로 가져다 씁니다.)
 
 ```python
 DEFAULT_CONFIG = {
@@ -71,9 +79,23 @@ DEFAULT_CONFIG = {
 
 ### 3. 실행
 
+**학습과 증강을 분리해서 실행 (권장)**
+
 ```bash
 cd Structured
-python pipeline.py
+python train_pipeline.py     # 전처리 → 분류(증강 전) → GAN 학습 → output/models/gan_final.pth 저장
+python augment_pipeline.py   # gan_final.pth 로드 → 증강 → 분류(증강 후) → 시각화
+```
+
+`augment_pipeline.py`는 재학습 없이 `ae_threshold` / `target_counts` 등 증강 설정만
+바꿔서 여러 번 다시 실행할 수 있습니다. `Pipeline.py`의 `DEFAULT_CONFIG`를 수정한 뒤
+다시 실행하면 됩니다.
+
+**한 번에 전체 실행**
+
+```bash
+cd Structured
+python Pipeline.py           # train_pipeline → augment_pipeline 순서로 한 번에 실행
 ```
 
 ---
@@ -81,33 +103,43 @@ python pipeline.py
 ## 파이프라인 흐름
 
 ```
+══════════════════ train_pipeline.py ══════════════════
 [Step 1] 전처리 (Preprocess.py)
          CSV 로드 → NaN 처리 → 이상치 처리 → 레이블 축소 → 정규화 [-1,1]
               ↓
 [Step 2] 분류 - 증강 전 (Classify.py)
-         RF / XGBoost / BiGRU 학습·평가 → results_before
+         RF / XGBoost / BiGRU 학습·평가 → output/models/results_before.pkl
               ↓
 [Step 3] GAN 학습 (Train.py)
          Generator + DiscriminatorAE / CNN / LSTM 동시 학습
          epoch 마다 체크포인트 저장 → output/checkpoints/
               ↓
-[Step 4] 데이터 증강 (Augmentation.py)
+         학습 완료 모델 + x_min/x_max + 설정 저장 → output/models/gan_final.pth
+
+══════════════════ augment_pipeline.py ═════════════════
+[모델 로드] output/models/gan_final.pth 로드 (재학습 없음)
+              ↓
+[Step 1] 데이터 증강 (Augmentation.py)
          클래스별 부족 샘플을 Generator로 생성 → 투표 필터 통과 시 저장
          결과 → output/augmented/aug_label{N}.npy
               ↓
-[Step 5] 분류 - 증강 후 (Classify.py)
+[Step 2] 분류 - 증강 후 (Classify.py)
          원본 + 증강 데이터 병합 → RF / XGBoost / BiGRU 재학습·평가 → results_after
               ↓
-[Step 6] 시각화 (Visualization.py)
-         증강 전/후 성능 비교 그래프 3종 → output/visualization/
+[Step 3] 시각화 (Visualization.py)
+         output/models/results_before.pkl 로드 + results_after 비교 그래프 3종
+         → output/visualization/
 ```
 
 ### 출력 폴더
 
 ```
 output/
+├── models/
+│   ├── gan_final.pth        # 학습 완료 모델 번들 (가중치 + x_min/x_max + config)
+│   └── results_before.pkl   # 증강 전 분류 결과 (metrics만)
 ├── checkpoints/
-│   ├── checkpoint_1.pth
+│   ├── checkpoint_1.pth     # 이어 학습용 (옵티마이저 상태 포함)
 │   ├── checkpoint_2.pth
 │   └── ...
 ├── augmented/
@@ -227,14 +259,15 @@ GAN 모델 아키텍처를 정의합니다.
 
 ---
 
-### `utils.py`
-
-Train.py 내부에서 사용하는 공통 유틸입니다.
+### `Utils.py`
 
 | 함수 | 역할 |
 |---|---|
-| `save_checkpoint(...)` | 모델·옵티마이저 상태를 `.pth`로 저장 |
-| `load_checkpoint(...)` | 체크포인트에서 상태 복원 |
+| `save_checkpoint(...)` | 모델·옵티마이저 상태를 `.pth`로 저장 (이어 학습용, `Train.py` 내부에서 사용) |
+| `load_checkpoint(...)` | 체크포인트에서 상태 복원 (이어 학습용) |
+| `save_model_bundle(...)` | 학습 완료 모델 + x_min/x_max + config를 `gan_final.pth` 한 파일로 저장 (`train_pipeline.py`에서 사용) |
+| `load_model_bundle(path)` | `gan_final.pth`를 로드해 모델(eval 모드) + x_min/x_max + config 반환 (`augment_pipeline.py`에서 사용) |
+| `inverse_normalize(...)` | Min-Max 정규화 역변환 [-1,1] → 원본 스케일 |
 | `build_schedulers(...)` | 4개 옵티마이저에 `ReduceLROnPlateau` 일괄 적용 |
 | `get_lr(optimizer)` | 현재 학습률 조회 |
 
@@ -252,7 +285,7 @@ cfg["resume_epoch"] = 50    # output/checkpoints/checkpoint_50.pth 에서 복원
 
 ## 일부 단계만 실행
 
-`pipeline.py`를 직접 수정하지 않고 각 모듈 함수를 개별 호출할 수 있습니다.
+`train_pipeline.py` / `augment_pipeline.py`를 직접 수정하지 않고 각 모듈 함수를 개별 호출할 수 있습니다.
 
 ```python
 import sys
